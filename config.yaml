@@ -1,0 +1,85 @@
+# ============================================================
+# Envoy Config Generator - Configuration File
+# ============================================================
+
+envoy:
+  log_dir: /var/log/envoy
+  service_user: root
+  # Output path for the generated envoy.yaml
+  # Can be overridden at runtime with --output
+  config_output: /usr/local/etc/envoy/envoy.yaml
+  # systemctl command used to apply a new config.
+  # Use "restart" if envoy has no ExecReload handler (default).
+  # Use "reload"  if ExecReload is configured in the service file.
+  restart_command: restart
+  upstream:
+    address: 10.196.18.121
+    port: 30080
+  # Optional: HTTP/1.0 support for upstream proxies that downgrade to HTTP/1.0.
+  # Remove or comment out this block if not needed.
+  http_protocol_options:
+    accept_http_10: true
+    default_host_for_http_10: "localhost"
+
+letsencrypt:
+  # Master switch — set to false to disable all LE/ACME functionality
+  enabled: true
+  acme_port: 8888
+  email: admin@example.com
+  # Webroot directory served by the certbot webroot server.
+  # Must be one level above .well-known/ — certbot creates the subdirectory itself.
+  webroot_dir: /var/www
+  # staging: true  — use LE staging server (no rate limits, untrusted cert)
+  #                  use this to verify your setup without hitting production limits
+  # staging: false — use LE production server (trusted cert, rate limited)
+  staging: false
+  # all_hosts: true  — every enabled host gets a LE certificate
+  # all_hosts: false — LE certificate is controlled per host via the
+  #                    'letsencrypt' flag on each host entry
+  all_hosts: true
+
+# Certificate configuration
+# mode: "shared"   - one certificate for all hosts
+# mode: "per_host" - individual certificate per host (see hosts section)
+certificates:
+  mode: per_host
+  cert_dir: /usr/local/etc/envoy
+
+  # Only used when mode is "shared"
+  # shared:
+  #   fullchain: shared-tls.fullchain.pem
+  #   privkey:   shared-tls.privkey.pem
+
+# Host definitions
+# Each host entry generates one filter_chain block in the envoy config.
+# Set enabled: false to exclude a host from the generated config entirely.
+# Set letsencrypt: false to skip LE certificate issuance for this host
+#   (only relevant when letsencrypt.all_hosts is false).
+hosts:
+  - name: main
+    domains:
+      - 4-srv-k3sox8-01.dssax.de
+      - dav.4-srv-k3sox8-01.dssax.de
+    enabled: true
+    letsencrypt: true
+    cert:
+      fullchain: as8-tls.fullchain.pem
+      privkey:   as8-tls.privkey.pem
+
+  - name: grafana
+    domains:
+      - grafana.4-srv-k3sox8-01.dssax.de
+    enabled: true
+    letsencrypt: true
+    cert:
+      fullchain: grafana-tls.fullchain.pem
+      privkey:   grafana-tls.privkey.pem
+
+  - name: prometheus
+    domains:
+      - prometheus.4-srv-k3sox8-01.dssax.de
+    enabled: false          # set to true to activate this host
+    letsencrypt: false       # no LE cert — uses existing self-signed cert
+    cert:
+      fullchain: prometheus-tls.fullchain.pem
+      privkey:   prometheus-tls.privkey.pem
