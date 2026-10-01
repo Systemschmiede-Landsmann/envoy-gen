@@ -58,8 +58,8 @@ certificates:
 hosts:
   - name: main
     domains:
-      - 4-srv-k3sox8-01.dssax.de
-      - dav.4-srv-k3sox8-01.dssax.de
+      - ox.example.com
+      - dav.ox.example.com
     enabled: true
     letsencrypt: true
     cert:
@@ -68,7 +68,7 @@ hosts:
 
   - name: grafana
     domains:
-      - grafana.4-srv-k3sox8-01.dssax.de
+      - grafana.ox.example.com
     enabled: true
     letsencrypt: true
     cert:
@@ -77,7 +77,7 @@ hosts:
 
   - name: prometheus
     domains:
-      - prometheus.4-srv-k3sox8-01.dssax.de
+      - prometheus.ox.example.com
     enabled: false          # set to true to activate this host
     letsencrypt: false       # no LE cert — uses existing self-signed cert
     cert:
