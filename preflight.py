@@ -29,6 +29,15 @@ import urllib.request
 import urllib.error
 import yaml
 
+from common import (
+    get_active_hosts,
+    get_le_hosts,
+    get_provided_hosts,
+    le_active,
+    get_cert_paths,
+    collect_cert_checks,
+)
+
 
 # ============================================================
 # Result tracking
@@ -90,10 +99,13 @@ def resolve_domain(domain: str) -> list[str]:
 
 def port_listening(port: int) -> bool:
     """Check if a local port is bound and listening."""
-    result = subprocess.run(
-        ['ss', '-tlnp', f'sport = :{port}'],
-        capture_output=True, text=True
-    )
+    try:
+        result = subprocess.run(
+            ['ss', '-tlnp', f'sport = :{port}'],
+            capture_output=True, text=True
+        )
+    except FileNotFoundError:
+        return False  # 'ss' missing — already reported by check_binaries
     return str(port) in result.stdout
 
 
@@ -130,14 +142,16 @@ def dir_writable(path: str) -> bool:
 # Check functions
 # ============================================================
 
-def check_binaries() -> None:
+def check_binaries(need_certbot: bool = True) -> None:
     """Check that required system binaries are available."""
     required = {
-        'certbot':  'apt install certbot',
         'python3':  'apt install python3',
         'systemctl':'(systemd required)',
         'ss':       'apt install iproute2',
+        'openssl':  'apt install openssl (needed to verify certificate files)',
     }
+    if need_certbot:
+        required['certbot'] = 'apt install certbot'
     for binary, hint in required.items():
         if shutil.which(binary):
             record(PASS, "binaries", f"{binary} found at: {shutil.which(binary)}")
@@ -168,18 +182,26 @@ def check_config(cfg: dict) -> None:
         'envoy.restart_command':    lambda c: c.get('envoy', {}).get('restart_command'),
         'envoy.upstream.address':   lambda c: c.get('envoy', {}).get('upstream', {}).get('address'),
         'envoy.upstream.port':      lambda c: c.get('envoy', {}).get('upstream', {}).get('port'),
-        'letsencrypt.enabled':      lambda c: c.get('letsencrypt', {}).get('enabled') is not None,
-        'letsencrypt.email':        lambda c: c.get('letsencrypt', {}).get('email'),
-        'letsencrypt.webroot_dir':  lambda c: c.get('letsencrypt', {}).get('webroot_dir'),
-        'letsencrypt.acme_port':    lambda c: c.get('letsencrypt', {}).get('acme_port'),
         'certificates.mode':        lambda c: c.get('certificates', {}).get('mode'),
         'certificates.cert_dir':    lambda c: c.get('certificates', {}).get('cert_dir'),
     }
+    if le_active(cfg):
+        required_keys.update({
+            'letsencrypt.email':       lambda c: c.get('letsencrypt', {}).get('email'),
+            'letsencrypt.webroot_dir': lambda c: c.get('letsencrypt', {}).get('webroot_dir'),
+            'letsencrypt.acme_port':   lambda c: c.get('letsencrypt', {}).get('acme_port'),
+        })
     for key, getter in required_keys.items():
         if getter(cfg):
             record(PASS, "config", f"Key present: {key}")
         else:
             record(FAIL, "config", f"Missing or empty: {key}")
+
+    # Report certificate sources
+    le_names   = [h['name'] for h in get_le_hosts(cfg)]
+    prov_names = [h['name'] for h in get_provided_hosts(cfg)]
+    record(INFO, "config", f"Let's Encrypt hosts: {', '.join(le_names) or '-'}")
+    record(INFO, "config", f"Provided-certificate hosts: {', '.join(prov_names) or '-'}")
 
     # Validate restart_command value
     restart_cmd = cfg.get('envoy', {}).get('restart_command', '')
@@ -188,12 +210,13 @@ def check_config(cfg: dict) -> None:
     else:
         record(FAIL, "config", f"restart_command must be 'restart' or 'reload', got: '{restart_cmd}'")
 
-    # Report staging mode
-    staging = cfg.get('letsencrypt', {}).get('staging', False)
-    if staging:
-        record(WARN, "config", "letsencrypt.staging is true — certificates will not be trusted by browsers")
-    else:
-        record(PASS, "config", "letsencrypt.staging is false — production mode")
+    # Report staging mode (only relevant when Let's Encrypt is used)
+    if le_active(cfg):
+        staging = cfg.get('letsencrypt', {}).get('staging', False)
+        if staging:
+            record(WARN, "config", "letsencrypt.staging is true — certificates will not be trusted by browsers")
+        else:
+            record(PASS, "config", "letsencrypt.staging is false — production mode")
 
     # Report http_protocol_options
     if cfg.get('envoy', {}).get('http_protocol_options'):
@@ -209,13 +232,22 @@ def check_config(cfg: dict) -> None:
     else:
         record(FAIL, "config", "No enabled hosts found in config")
 
-    # Check cert blocks on per_host mode
-    if cfg.get('certificates', {}).get('mode') == 'per_host':
+    # Check certificate definitions
+    cert_mode = cfg.get('certificates', {}).get('mode')
+    if cert_mode == 'per_host':
         for host in active:
-            if 'cert' in host:
+            if (host.get('cert') or {}).get('fullchain') and (host.get('cert') or {}).get('privkey'):
                 record(PASS, "config", f"Host '{host['name']}': cert block present")
             else:
-                record(FAIL, "config", f"Host '{host['name']}': missing cert block (required for per_host mode)")
+                record(FAIL, "config", f"Host '{host['name']}': missing cert.fullchain/privkey (required for per_host mode)")
+    elif cert_mode == 'shared':
+        shared = cfg.get('certificates', {}).get('shared') or {}
+        if shared.get('fullchain') and shared.get('privkey'):
+            record(PASS, "config", "certificates.shared block present")
+        else:
+            record(FAIL, "config", "certificates.mode is 'shared' but certificates.shared.fullchain/privkey is missing")
+    else:
+        record(FAIL, "config", f"certificates.mode must be 'shared' or 'per_host', got: '{cert_mode}'")
 
 
 def check_envoy_service() -> None:
@@ -240,11 +272,17 @@ def check_envoy_service() -> None:
         record(FAIL, "envoy", f"envoy.service is not active — status: {status}")
 
 
-def check_ports() -> None:
-    """Check that ports 80 and 443 are listening."""
+def check_ports(cfg: dict) -> None:
+    """
+    Check that ports 80 and 443 are listening.
+    With Let's Encrypt, port 443 is only a warning: during the bootstrap phase
+    envoy runs HTTP-only until the first certificates have been issued.
+    """
     for port in [80, 443]:
         if port_listening(port):
             record(PASS, "ports", f"Port {port} is listening")
+        elif port == 443 and le_active(cfg):
+            record(WARN, "ports", "Port 443 is not listening — expected before the first certificates exist (bootstrap phase)")
         else:
             record(FAIL, "ports", f"Port {port} is not listening — is envoy running?")
 
@@ -253,7 +291,7 @@ def check_directories(cfg: dict) -> None:
     """Check that required directories are writable."""
     dirs = {
         'log_dir':    cfg.get('envoy', {}).get('log_dir'),
-        'webroot_dir':cfg.get('letsencrypt', {}).get('webroot_dir'),
+        'webroot_dir':cfg.get('letsencrypt', {}).get('webroot_dir') if le_active(cfg) else None,
         'cert_dir':   cfg.get('certificates', {}).get('cert_dir'),
     }
     for label, path in dirs.items():
@@ -278,8 +316,8 @@ def check_dns_and_routing(cfg: dict) -> None:
     else:
         record(WARN, "dns", "Could not determine public IP — DNS checks will be skipped")
 
-    hosts = cfg.get('hosts', [])
-    active = [h for h in hosts if h.get('enabled', True)]
+    active     = get_active_hosts(cfg)
+    le_domains = {d for h in get_le_hosts(cfg) for d in h.get('domains', [])}
 
     for host in active:
         for domain in host.get('domains', []):
@@ -293,10 +331,45 @@ def check_dns_and_routing(cfg: dict) -> None:
             else:
                 record(INFO, "dns", f"{domain} — resolves to {resolved} (public IP unknown)")
 
+            if domain not in le_domains:
+                continue  # provided certificate — no ACME challenge needed
             if check_http_challenge_route(domain):
                 record(PASS, "routing", f"{domain} — port 80 ACME route reachable")
             else:
                 record(FAIL, "routing", f"{domain} — port 80 not reachable or connection refused")
+
+
+def check_certificates(cfg: dict) -> None:
+    """
+    Verify certificate files.
+      - Provided certificates: must exist, key must match, not expired, domains covered.
+      - Let's Encrypt certificates: checked only if the files already exist
+        (before the first issuance they are created by acme.py).
+    """
+    provided = get_provided_hosts(cfg)
+    le_hosts = get_le_hosts(cfg)
+
+    # Let's Encrypt hosts whose files do not exist yet are not an error
+    le_existing = []
+    for host in le_hosts:
+        try:
+            fullchain, privkey = get_cert_paths(host, cfg)
+        except ValueError:
+            continue  # reported by check_config
+        if os.path.isfile(fullchain) and os.path.isfile(privkey):
+            le_existing.append(host)
+        else:
+            record(INFO, "certs", f"Host '{host['name']}': Let's Encrypt certificate not issued yet — will be created by acme.py")
+
+    for label, result in collect_cert_checks(cfg, provided + le_existing):
+        for line in result['info']:
+            record(INFO, "certs", f"[{label}] {line}")
+        for line in result['warnings']:
+            record(WARN, "certs", f"[{label}] {line}")
+        for line in result['errors']:
+            record(FAIL, "certs", f"[{label}] {line}")
+        if not result['errors']:
+            record(PASS, "certs", f"[{label}] certificate and key are usable")
 
 
 def check_deploy_hook() -> None:
@@ -384,20 +457,27 @@ def main():
     print(f"Config: {args.config}")
     print("=" * 60)
 
-    check_binaries()
-    check_python_modules()
-
     cfg = load_config(args.config)
     if cfg is None:
+        check_binaries()
+        check_python_modules()
         print("\n[FAIL] Cannot continue without a valid config file.")
         sys.exit(1)
 
+    use_le = le_active(cfg)
+    check_binaries(need_certbot=use_le)
+    check_python_modules()
+
     check_config(cfg)
     check_envoy_service()
-    check_ports()
+    check_ports(cfg)
     check_directories(cfg)
-    check_certbot_version()
-    check_deploy_hook()
+    check_certificates(cfg)
+    if use_le:
+        check_certbot_version()
+        check_deploy_hook()
+    else:
+        record(INFO, "certs", "No host uses Let's Encrypt — certbot and renewal hook checks skipped")
 
     if not args.skip_dns:
         check_dns_and_routing(cfg)

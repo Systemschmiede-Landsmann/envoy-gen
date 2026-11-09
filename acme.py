@@ -26,6 +26,12 @@ import subprocess
 import argparse
 import time
 
+from common import (
+    get_le_hosts,
+    le_active,
+    get_cert_paths as _get_cert_paths,
+)
+
 
 DEPLOY_HOOK_DIR  = '/etc/letsencrypt/renewal-hooks/deploy'
 PRE_HOOK_DIR     = '/etc/letsencrypt/renewal-hooks/pre'
@@ -51,21 +57,6 @@ def get_restart_command(cfg: dict) -> str:
     return cfg.get('envoy', {}).get('restart_command', 'restart')
 
 
-def get_le_hosts(cfg: dict) -> list:
-    """Return the list of hosts that should receive a Let's Encrypt certificate."""
-    all_hosts_flag = cfg['letsencrypt'].get('all_hosts', True)
-    result = []
-    for host in cfg['hosts']:
-        if not host.get('enabled', True):
-            continue
-        if all_hosts_flag:
-            result.append(host)
-        else:
-            if host.get('letsencrypt', False):
-                result.append(host)
-    return result
-
-
 def is_staging(cfg: dict, cli_staging) -> bool:
     """
     Determine whether to use the LE staging server.
@@ -79,29 +70,14 @@ def is_staging(cfg: dict, cli_staging) -> bool:
 def get_cert_paths(host: dict, cfg: dict) -> tuple[str, str]:
     """
     Resolve destination cert paths based on certificate mode.
-    Returns (dst_fullchain, dst_privkey).
-
-    In shared mode:  uses certificates.shared.fullchain / privkey
-    In per_host mode: uses host.cert.fullchain / privkey
+    Returns (dst_fullchain, dst_privkey). Absolute paths in config.yaml are used
+    as they are, relative names are placed in certificates.cert_dir.
     """
-    cert_dir  = cfg['certificates']['cert_dir']
-    cert_mode = cfg['certificates'].get('mode', 'per_host')
-
-    if cert_mode == 'shared':
-        shared = cfg['certificates'].get('shared', {})
-        if not shared:
-            print("[ERROR] certificates.mode is 'shared' but certificates.shared is not defined", file=sys.stderr)
-            sys.exit(1)
-        dst_fullchain = os.path.join(cert_dir, shared['fullchain'])
-        dst_privkey   = os.path.join(cert_dir, shared['privkey'])
-    else:
-        if 'cert' not in host:
-            print(f"[ERROR] Host '{host['name']}' is missing 'cert' block (required for per_host mode)", file=sys.stderr)
-            sys.exit(1)
-        dst_fullchain = os.path.join(cert_dir, host['cert']['fullchain'])
-        dst_privkey   = os.path.join(cert_dir, host['cert']['privkey'])
-
-    return dst_fullchain, dst_privkey
+    try:
+        return _get_cert_paths(host, cfg)
+    except ValueError as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def ensure_webroot(webroot_dir: str) -> None:
@@ -181,7 +157,12 @@ def issue_certificate(host: dict, cfg: dict, dry_run: bool = False,
     if staging:
         print(f"[i] Using LE staging server — certificate will NOT be trusted by browsers")
 
-    result = subprocess.run(cmd, capture_output=False)
+    try:
+        result = subprocess.run(cmd, capture_output=False)
+    except FileNotFoundError:
+        print("[ERROR] certbot not found in PATH — install it (apt install certbot) "
+              "or check where it is installed (which certbot)", file=sys.stderr)
+        return False
     if result.returncode == 0:
         print(f"[+] Certificate issued/renewed successfully for: {domain_str}")
         return True
@@ -226,8 +207,8 @@ def deploy_certificate(host: dict, cfg: dict, dry_run: bool = False,
         print(f"[ERROR] Certificate source files not found in: {le_live}", file=sys.stderr)
         return
 
-    cert_dir = cfg['certificates']['cert_dir']
-    os.makedirs(cert_dir, exist_ok=True)
+    for dst in (dst_fullchain, dst_privkey):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copy2(src_fullchain, dst_fullchain)
     shutil.copy2(src_privkey,   dst_privkey)
     print(f"[+] Certificate files deployed for: {host['name']}")
@@ -394,7 +375,10 @@ def main():
 
     # Install hooks if requested
     if args.install_hook:
-        install_hooks(os.path.abspath(args.config), cfg, dry_run=args.dry_run)
+        if le_active(cfg):
+            install_hooks(os.path.abspath(args.config), cfg, dry_run=args.dry_run)
+        else:
+            print("[INFO] No host uses Let's Encrypt — renewal hooks are not needed, skipping --install-hook")
 
     # Deploy-only mode — used by certbot deploy hook
     if args.deploy_only:
@@ -402,19 +386,18 @@ def main():
         deploy_only(cfg, dry_run=args.dry_run)
         return
 
-    # Check master LE switch
-    if not cfg.get('letsencrypt', {}).get('enabled', False):
-        print("[INFO] letsencrypt.enabled is false — nothing to do")
+    # Nothing to do if no host uses Let's Encrypt (switch off, or all hosts use provided certs)
+    le_hosts = get_le_hosts(cfg)
+    if not le_hosts:
+        if not cfg.get('letsencrypt', {}).get('enabled', False):
+            print("[INFO] letsencrypt.enabled is false — all hosts use provided certificates, nothing to do")
+        else:
+            print("[INFO] No host has letsencrypt: true — all hosts use provided certificates, nothing to do")
         sys.exit(0)
 
     le_cfg      = cfg['letsencrypt']
     webroot_dir = le_cfg['webroot_dir']
     acme_port   = le_cfg['acme_port']
-
-    le_hosts = get_le_hosts(cfg)
-    if not le_hosts:
-        print("[INFO] No hosts qualify for LE certificate issuance — nothing to do")
-        sys.exit(0)
 
     all_hosts_flag = le_cfg.get('all_hosts', True)
     mode_label     = "all enabled hosts" if all_hosts_flag else "per-host letsencrypt flag"

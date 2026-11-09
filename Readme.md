@@ -13,6 +13,7 @@ envoy-gen/
 ├── config.yaml                      # Single source of truth for all scripts
 ├── generate.py                      # Generates envoy.yaml from templates
 ├── acme.py                          # Issues and renews Let's Encrypt certificates
+├── common.py                        # Shared helpers (certificate selection, paths, checks)
 ├── preflight.py                     # Checks all requirements before cert issuance
 └── templates/
     ├── envoy.yaml.j2                # Full config template (HTTP + TLS)
@@ -182,6 +183,9 @@ python3 generate.py --dry-run
 
 # Generate and restart Envoy
 sudo python3 generate.py --reload
+
+# Skip the certificate verification
+sudo python3 generate.py --skip-cert-check
 ```
 
 ### `acme.py`
@@ -230,6 +234,77 @@ sudo python3 preflight.py --skip-dns
 ```
 
 Checks: required binaries, Python modules, config validity, Envoy service status, ports 80/443, directory permissions, DNS resolution, ACME challenge route reachability, renewal hook installation.
+
+## Using your own certificates (no Let's Encrypt)
+
+Each enabled host gets its certificate from one of two sources: **Let's Encrypt** (managed by `acme.py`) or **provided** files that you supply yourself, for example from an internal CA or a commercial certificate. Both can be combined.
+
+### Only provided certificates
+
+```yaml
+letsencrypt:
+  enabled: false                  # the whole letsencrypt section may be omitted
+
+certificates:
+  mode: per_host                  # or "shared" for a single certificate
+  cert_dir: /usr/local/etc/envoy
+
+hosts:
+  - name: main
+    domains: [example.com, dav.example.com]
+    cert:
+      fullchain: main.fullchain.pem                 # relative -> cert_dir
+      privkey:   /etc/ssl/private/main.key          # absolute path is used as it is
+  - name: grafana
+    domains: [grafana.example.com]
+    cert:
+      fullchain: grafana.fullchain.pem
+      privkey:   grafana.key
+```
+
+Copy the files to the configured locations, then:
+
+```bash
+sudo python3 generate.py          # no --bootstrap needed
+sudo systemctl restart envoy
+```
+
+`fullchain` must contain the server certificate first, followed by the intermediates. `acme.py` has nothing to do in this mode and exits with a message.
+
+### Mixing Let's Encrypt and provided certificates
+
+```yaml
+letsencrypt:
+  enabled: true
+  all_hosts: false                # decide per host
+  ...
+
+hosts:
+  - name: main
+    letsencrypt: true             # issued and renewed by acme.py
+    ...
+  - name: legacy
+    letsencrypt: false            # uses the provided files in its cert block
+    cert:
+      fullchain: legacy.fullchain.pem
+      privkey:   legacy.key
+```
+
+`acme.py` only touches the hosts with `letsencrypt: true`; the files of all other hosts are never modified. The ACME challenge route is only added to the Envoy config if at least one host uses Let's Encrypt.
+
+### Certificate verification
+
+Before writing a full `envoy.yaml`, `generate.py` checks every certificate/key pair (using `openssl`):
+
+| Check | Result |
+|---|---|
+| Files exist and are readable | error |
+| Private key matches the certificate | error |
+| Certificate is not expired | error |
+| Certificate expires within 14 days | warning |
+| Every host domain is covered by the certificate SANs (wildcards supported) | warning |
+
+An error aborts the run and `envoy.yaml` is **not** written, so a broken certificate never reaches a running Envoy. `--skip-cert-check` overrides this, for example to generate the file before the certificates have been copied. `preflight.py` runs the same checks.
 
 ## Adding a new domain
 

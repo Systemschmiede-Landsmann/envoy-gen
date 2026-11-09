@@ -38,7 +38,7 @@ static_resources:
                   - name: redirect_to_https
                     domains: ["*"]
                     routes:
-{% if letsencrypt.enabled %}
+{% if le_active %}
                       # Forward ACME challenge requests to local certbot webroot server
                       - match:
                           prefix: "/.well-known/acme-challenge/"
@@ -135,19 +135,11 @@ static_resources:
           "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
           common_tls_context:
             tls_certificates:
-{% if certificates.mode == 'shared' %}
-            # Shared certificate for all hosts
+            # Certificate for: {{ host.name }} ({{ host.cert_source }})
             - certificate_chain:
-                filename: {{ certificates.cert_dir }}/{{ certificates.shared.fullchain }}
+                filename: {{ host.cert_paths.fullchain }}
               private_key:
-                filename: {{ certificates.cert_dir }}/{{ certificates.shared.privkey }}
-{% else %}
-            # Per-host certificate for: {{ host.name }}
-            - certificate_chain:
-                filename: {{ certificates.cert_dir }}/{{ host.cert.fullchain }}
-              private_key:
-                filename: {{ certificates.cert_dir }}/{{ host.cert.privkey }}
-{% endif %}
+                filename: {{ host.cert_paths.privkey }}
             alpn_protocols: [ "http/1.1" ]
 {% endfor %}
 
@@ -170,7 +162,7 @@ static_resources:
               socket_address:
                 address: {{ envoy.upstream.address }}
                 port_value: {{ envoy.upstream.port }}
-{% if letsencrypt.enabled %}
+{% if le_active %}
 
   # Local certbot webroot server for ACME HTTP-01 challenge
   - name: acme-challenge
@@ -184,5 +176,5 @@ static_resources:
             address:
               socket_address:
                 address: 127.0.0.1
-                port_value: {{ letsencrypt.acme_port }}
+                port_value: {{ acme_port }}
 {% endif %}

@@ -22,6 +22,15 @@ import argparse
 import sys
 from jinja2 import Environment, FileSystemLoader
 
+from common import (
+    get_active_hosts,
+    get_le_hosts,
+    get_provided_hosts,
+    le_active,
+    get_cert_paths,
+    collect_cert_checks,
+)
+
 
 # Default config path — resolved relative to this script's location
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -100,13 +109,25 @@ def validate_config(cfg: dict, bootstrap: bool = False) -> None:
     errors = []
 
     # Check required top-level keys
-    for key in ['envoy', 'letsencrypt', 'certificates', 'hosts']:
+    for key in ['envoy', 'certificates', 'hosts']:
         if key not in cfg:
             errors.append(f"Missing required config key: '{key}'")
 
     # Check config_output is defined
     if not cfg.get('envoy', {}).get('config_output'):
         errors.append("Missing required config key: 'envoy.config_output'")
+
+    # Let's Encrypt settings are only required if at least one host uses Let's Encrypt
+    if le_active(cfg):
+        for key in ('email', 'webroot_dir', 'acme_port'):
+            if not cfg.get('letsencrypt', {}).get(key):
+                errors.append(f"Missing required config key: 'letsencrypt.{key}' (Let's Encrypt is used by at least one host)")
+
+    # Bootstrap mode only exists to issue Let's Encrypt certificates
+    if bootstrap and not le_active(cfg):
+        errors.append("--bootstrap is only needed for Let's Encrypt, but no host uses it "
+                      "(letsencrypt.enabled is false or no host has letsencrypt: true). "
+                      "Generate the full config instead.")
 
     # Validate restart_command value
     restart_cmd = cfg.get('envoy', {}).get('restart_command', 'restart')
@@ -119,8 +140,10 @@ def validate_config(cfg: dict, bootstrap: bool = False) -> None:
         if cert_mode not in ('shared', 'per_host'):
             errors.append(f"certificates.mode must be 'shared' or 'per_host', got: '{cert_mode}'")
 
-        if cert_mode == 'shared' and 'shared' not in cfg.get('certificates', {}):
-            errors.append("certificates.mode is 'shared' but certificates.shared is not defined")
+        if cert_mode == 'shared':
+            shared = cfg.get('certificates', {}).get('shared') or {}
+            if not shared.get('fullchain') or not shared.get('privkey'):
+                errors.append("certificates.mode is 'shared' but certificates.shared.fullchain/privkey is not defined")
 
     # Check hosts
     hosts = cfg.get('hosts', [])
@@ -171,14 +194,55 @@ def render_template(cfg: dict, template_dir: str, bootstrap: bool = False) -> st
     print(f"[+] Using template: {template_file}")
     template = env.get_template(template_file)
 
-    active_hosts = [h for h in cfg['hosts'] if h.get('enabled', True)]
+    active_hosts = get_active_hosts(cfg)
+    le_names     = {h['name'] for h in get_le_hosts(cfg)}
+
+    # Resolve certificate paths per host (not needed in bootstrap mode)
+    hosts = []
+    for host in active_hosts:
+        entry = dict(host)
+        entry['cert_source'] = 'letsencrypt' if host['name'] in le_names else 'provided'
+        if not bootstrap:
+            fullchain, privkey = get_cert_paths(host, cfg)
+            entry['cert_paths'] = {'fullchain': fullchain, 'privkey': privkey}
+        hosts.append(entry)
 
     return template.render(
         envoy=cfg['envoy'],
-        letsencrypt=cfg['letsencrypt'],
+        letsencrypt=cfg.get('letsencrypt', {}),
         certificates=cfg['certificates'],
-        hosts=active_hosts
+        hosts=hosts,
+        le_active=le_active(cfg),
+        acme_port=cfg.get('letsencrypt', {}).get('acme_port'),
     )
+
+
+def check_certificates(cfg: dict) -> bool:
+    """
+    Verify all certificate/key pairs referenced by the config:
+    files exist, key matches certificate, not expired, domains covered by SANs.
+    Prints a report and returns True if no errors were found.
+    """
+    hosts  = get_active_hosts(cfg)
+    checks = collect_cert_checks(cfg, hosts)
+    le_names = {h['name'] for h in get_le_hosts(cfg)}
+    provided = [h['name'] for h in get_provided_hosts(cfg)]
+
+    print(f"[+] Certificate check — Let's Encrypt hosts: {', '.join(sorted(le_names)) or '-'}; "
+          f"provided-certificate hosts: {', '.join(provided) or '-'}")
+
+    ok = True
+    for label, result in checks:
+        for line in result['info']:
+            print(f"[i]   [{label}] {line}")
+        for line in result['warnings']:
+            print(f"[WARNING] [{label}] {line}")
+        for line in result['errors']:
+            print(f"[ERROR] [{label}] {line}", file=sys.stderr)
+            ok = False
+    if ok:
+        print("[+] Certificate check passed")
+    return ok
 
 
 def validate_envoy_binary(output_path: str) -> None:
@@ -272,6 +336,14 @@ def main():
         )
     )
     parser.add_argument(
+        '--skip-cert-check',
+        action='store_true',
+        help=(
+            'Do not verify certificate files before writing the full config. '
+            'By default a missing file, a key/certificate mismatch or an expired certificate aborts the run.'
+        )
+    )
+    parser.add_argument(
         '--dry-run',
         action='store_true',
         help='Print generated config to stdout, do not write any files'
@@ -287,6 +359,14 @@ def main():
 
     # Validate config
     validate_config(cfg, bootstrap=args.bootstrap)
+
+    # Verify certificate files (full mode only — bootstrap runs without certificates)
+    if not args.bootstrap and not args.skip_cert_check:
+        cert_ok = check_certificates(cfg)
+        if not cert_ok and not args.dry_run:
+            print("[ERROR] Certificate check failed — envoy.yaml was NOT written. "
+                  "Fix the certificates or use --skip-cert-check to override.", file=sys.stderr)
+            sys.exit(1)
 
     # Set up log directory (requires root, skip in dry-run)
     if not args.no_logdir and not args.dry_run:

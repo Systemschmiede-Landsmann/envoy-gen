@@ -21,6 +21,17 @@ envoy:
     accept_http_10: true
     default_host_for_http_10: "localhost"
 
+# Certificate sources
+# -------------------
+# Every enabled host gets its certificate from one of two sources:
+#   * Let's Encrypt  — issued and renewed by acme.py
+#   * Provided       — ready-made certificate files that you supply yourself
+#
+# To use ONLY your own certificates:  letsencrypt.enabled: false
+#   (the whole letsencrypt section can then be removed; no bootstrap step is needed)
+# To MIX both sources:                letsencrypt.all_hosts: false, then set
+#   "letsencrypt: true" on the hosts that should use Let's Encrypt. All other
+#   hosts use the provided files listed in their cert block (or certificates.shared).
 letsencrypt:
   # Master switch — set to false to disable all LE/ACME functionality
   enabled: true
@@ -41,6 +52,11 @@ letsencrypt:
 # Certificate configuration
 # mode: "shared"   - one certificate for all hosts
 # mode: "per_host" - individual certificate per host (see hosts section)
+#
+# File names are relative to cert_dir. Absolute paths (e.g. /etc/ssl/private/x.key)
+# are used as they are, so provided certificates can live anywhere.
+# generate.py verifies all files before writing envoy.yaml (file exists, key matches
+# certificate, not expired, domains covered). Use --skip-cert-check to override.
 certificates:
   mode: per_host
   cert_dir: /usr/local/etc/envoy
@@ -53,8 +69,8 @@ certificates:
 # Host definitions
 # Each host entry generates one filter_chain block in the envoy config.
 # Set enabled: false to exclude a host from the generated config entirely.
-# Set letsencrypt: false to skip LE certificate issuance for this host
-#   (only relevant when letsencrypt.all_hosts is false).
+# Set letsencrypt: false to use a provided certificate for this host instead of
+#   Let's Encrypt (only relevant when letsencrypt.all_hosts is false).
 hosts:
   - name: main
     domains:
