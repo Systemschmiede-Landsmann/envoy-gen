@@ -107,3 +107,28 @@ hosts:
     cert:
       fullchain: prometheus-tls.fullchain.pem
       privkey:   prometheus-tls.privkey.pem
+
+# ------------------------------------------------------------
+# Optional: Keycloak
+# ------------------------------------------------------------
+# If Keycloak is deployed together with Open-Xchange (login), it listens on its
+# own NodePort and is reached under its own hostname. Switching it on adds
+#   * its own HTTPS filter chain (SNI match on the domains below)
+#   * its own upstream cluster (keycloak.upstream, default port 31537)
+#   * its own certificate (cert block for mode "per_host", the shared
+#     certificate for mode "shared" — it must then also cover the Keycloak hostname)
+# Keycloak takes part in the Let's Encrypt selection like any other host:
+#   all_hosts: true  -> it always gets a Let's Encrypt certificate
+#   all_hosts: false -> controlled by "letsencrypt: true/false" below
+# Envoy talks plain HTTP to the upstream, as for Open-Xchange.
+keycloak:
+  enabled: false
+  domains:
+    - keycloak.domain.example
+  upstream:
+    # address: 10.0.0.1       # optional, default: envoy.upstream.address
+    port: 31537
+  letsencrypt: true           # only relevant when letsencrypt.all_hosts is false
+  cert:                       # only needed for certificates.mode: per_host
+    fullchain: keycloak-tls.fullchain.pem
+    privkey:   keycloak-tls.privkey.pem

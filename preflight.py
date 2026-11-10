@@ -32,6 +32,8 @@ import yaml
 from common import (
     missing_config_hint,
     get_active_hosts,
+    keycloak_enabled,
+    get_keycloak_upstream,
     get_le_hosts,
     get_provided_hosts,
     le_active,
@@ -203,6 +205,11 @@ def check_config(cfg: dict) -> None:
     prov_names = [h['name'] for h in get_provided_hosts(cfg)]
     record(INFO, "config", f"Let's Encrypt hosts: {', '.join(le_names) or '-'}")
     record(INFO, "config", f"Provided-certificate hosts: {', '.join(prov_names) or '-'}")
+    if keycloak_enabled(cfg):
+        kc_addr, kc_port = get_keycloak_upstream(cfg)
+        record(INFO, "config", f"Keycloak enabled: {', '.join(cfg['keycloak'].get('domains') or [])} -> {kc_addr}:{kc_port}")
+    else:
+        record(INFO, "config", "Keycloak disabled")
 
     # Validate restart_command value
     restart_cmd = cfg.get('envoy', {}).get('restart_command', '')
@@ -226,8 +233,7 @@ def check_config(cfg: dict) -> None:
         record(INFO, "config", "http_protocol_options not set — HTTP/1.0 support disabled")
 
     # Check at least one enabled host
-    hosts = cfg.get('hosts', [])
-    active = [h for h in hosts if h.get('enabled', True)]
+    active = get_active_hosts(cfg)   # includes Keycloak when enabled
     if active:
         record(PASS, "config", f"{len(active)} enabled host(s) defined")
     else:

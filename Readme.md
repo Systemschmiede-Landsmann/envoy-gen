@@ -248,6 +248,33 @@ sudo python3 preflight.py --skip-dns
 
 Checks: required binaries, Python modules, config validity, Envoy service status, ports 80/443, directory permissions, DNS resolution, ACME challenge route reachability, renewal hook installation.
 
+## Keycloak (Open-Xchange login)
+
+If Keycloak is deployed together with Open-Xchange, it listens on its own NodePort (default `31537`; Open-Xchange stays on `30080`) and is reached under its own hostname (default `keycloak.domain.example`). Enable it in `config.yaml`:
+
+```yaml
+keycloak:
+  enabled: true
+  domains:
+    - keycloak.example.com
+  upstream:
+    # address: 10.0.0.1       # optional, default: envoy.upstream.address
+    port: 31537
+  letsencrypt: true           # only relevant when letsencrypt.all_hosts is false
+  cert:                       # only for certificates.mode: per_host
+    fullchain: keycloak-tls.fullchain.pem
+    privkey:   keycloak-tls.privkey.pem
+```
+
+Keycloak then behaves like an additional host with its own upstream:
+
+- own HTTPS filter chain (SNI match on `keycloak.domains`) routing to a separate `keycloak-http` cluster
+- own certificate: the `cert` block in `per_host` mode, the shared certificate in `shared` mode (it must then also cover the Keycloak hostname — `generate.py` warns if it does not)
+- takes part in the Let's Encrypt selection: with `all_hosts: true` it always gets a Let's Encrypt certificate, with `all_hosts: false` only if `letsencrypt: true` is set
+- `acme.py` and `preflight.py` include the Keycloak hostname automatically (DNS check, certificate issuance, certificate verification)
+
+With `enabled: false` (default) nothing Keycloak-related is generated. The name `keycloak` is reserved and cannot be used for an entry in `hosts`. Envoy talks plain HTTP to the Keycloak upstream, like for Open-Xchange.
+
 ## Using your own certificates (no Let's Encrypt)
 
 Each enabled host gets its certificate from one of two sources: **Let's Encrypt** (managed by `acme.py`) or **provided** files that you supply yourself, for example from an internal CA or a commercial certificate. Both can be combined.

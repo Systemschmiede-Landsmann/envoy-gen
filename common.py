@@ -29,9 +29,53 @@ EXPIRY_WARN_DAYS = 14
 # Certificate source selection
 # ============================================================
 
+# Keycloak (optional, deployed together with Open-Xchange)
+KEYCLOAK_DEFAULT_PORT = 31537
+KEYCLOAK_CLUSTER      = 'keycloak-http'
+
+
+def keycloak_enabled(cfg: dict) -> bool:
+    """True if the optional keycloak section is switched on."""
+    return bool((cfg.get('keycloak') or {}).get('enabled', False))
+
+
+def get_keycloak_upstream(cfg: dict) -> tuple:
+    """
+    Return (address, port) of the Keycloak upstream.
+    The address defaults to envoy.upstream.address, the port to 31537.
+    """
+    kc_up = (cfg.get('keycloak') or {}).get('upstream') or {}
+    address = kc_up.get('address') or cfg.get('envoy', {}).get('upstream', {}).get('address')
+    port    = kc_up.get('port') or KEYCLOAK_DEFAULT_PORT
+    return address, port
+
+
+def get_keycloak_host(cfg: dict):
+    """
+    Return Keycloak as a pseudo host entry (or None if disabled).
+    It then behaves like any other host: own filter chain (SNI), own certificate,
+    Let's Encrypt selection — but routes to its own upstream cluster.
+    """
+    if not keycloak_enabled(cfg):
+        return None
+    kc = cfg['keycloak']
+    return {
+        'name':             'keycloak',
+        'domains':          kc.get('domains') or [],
+        'enabled':          True,
+        'letsencrypt':      kc.get('letsencrypt', False),
+        'cert':             kc.get('cert'),
+        'upstream_cluster': KEYCLOAK_CLUSTER,
+    }
+
+
 def get_active_hosts(cfg: dict) -> list:
-    """Return all hosts with enabled: true (default true)."""
-    return [h for h in cfg.get('hosts', []) if h.get('enabled', True)]
+    """Return all hosts with enabled: true (default true), plus Keycloak if enabled."""
+    hosts = [h for h in cfg.get('hosts', []) if h.get('enabled', True)]
+    kc = get_keycloak_host(cfg)
+    if kc:
+        hosts.append(kc)
+    return hosts
 
 
 def get_le_hosts(cfg: dict) -> list:

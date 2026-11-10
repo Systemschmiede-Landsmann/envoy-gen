@@ -25,6 +25,8 @@ from jinja2 import Environment, FileSystemLoader
 from common import (
     missing_config_hint,
     get_active_hosts,
+    keycloak_enabled,
+    get_keycloak_upstream,
     get_le_hosts,
     get_provided_hosts,
     le_active,
@@ -152,9 +154,23 @@ def validate_config(cfg: dict, bootstrap: bool = False) -> None:
     if not hosts:
         errors.append("No hosts defined in configuration")
 
-    active_hosts = [h for h in hosts if h.get('enabled', True)]
+    active_hosts = get_active_hosts(cfg)
     if not active_hosts:
         errors.append("No enabled hosts found - at least one host must be enabled")
+
+    # Optional Keycloak section
+    if keycloak_enabled(cfg):
+        kc = cfg['keycloak']
+        if not kc.get('domains'):
+            errors.append("keycloak.enabled is true but keycloak.domains is empty")
+        if any(h.get('name') == 'keycloak' for h in hosts):
+            errors.append("A host is named 'keycloak' — the name is reserved for the keycloak section, rename the host")
+        kc_address, _ = get_keycloak_upstream(cfg)
+        if not kc_address:
+            errors.append("keycloak upstream address is missing (set keycloak.upstream.address or envoy.upstream.address)")
+        if not bootstrap and cfg.get('certificates', {}).get('mode') == 'per_host':
+            if not (kc.get('cert') or {}).get('fullchain') or not (kc.get('cert') or {}).get('privkey'):
+                errors.append("keycloak.cert.fullchain/privkey is required for certificates.mode 'per_host'")
 
     for host in hosts:
         if not host.get('name'):
@@ -209,7 +225,12 @@ def render_template(cfg: dict, template_dir: str, bootstrap: bool = False) -> st
             entry['cert_paths'] = {'fullchain': fullchain, 'privkey': privkey}
         hosts.append(entry)
 
+    kc_address, kc_port = get_keycloak_upstream(cfg)
+
     return template.render(
+        keycloak_enabled=keycloak_enabled(cfg),
+        keycloak_upstream_address=kc_address,
+        keycloak_upstream_port=kc_port,
         envoy=cfg['envoy'],
         letsencrypt=cfg.get('letsencrypt', {}),
         certificates=cfg['certificates'],
