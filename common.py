@@ -215,3 +215,15 @@ def collect_cert_checks(cfg: dict, hosts: list) -> list:
         label = ', '.join(entry['label'])
         checks.append((label, inspect_certificate(*entry['paths'], entry['domains'])))
     return checks
+
+
+# ============================================================
+# Config file hint
+# ============================================================
+
+def missing_config_hint(path: str) -> str:
+    """Return a hint for a missing config file (points to config.example.yaml if present)."""
+    example = os.path.join(os.path.dirname(os.path.abspath(path)), 'config.example.yaml')
+    if os.path.isfile(example):
+        return f"Create it from the example: cp {example} {path}  (then edit it)"
+    return "Create the file or pass the correct path with --config"

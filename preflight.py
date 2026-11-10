@@ -30,6 +30,7 @@ import urllib.error
 import yaml
 
 from common import (
+    missing_config_hint,
     get_active_hosts,
     get_le_hosts,
     get_provided_hosts,
@@ -64,7 +65,7 @@ def record(status: str, category: str, message: str) -> None:
 def load_config(path: str) -> dict | None:
     """Load config.yaml, return None on failure."""
     if not os.path.exists(path):
-        record(FAIL, "config", f"Config file not found: {path}")
+        record(FAIL, "config", f"Config file not found: {path} — {missing_config_hint(path)}")
         return None
     try:
         with open(path) as f:

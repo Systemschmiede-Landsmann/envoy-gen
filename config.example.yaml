@@ -1,4 +1,12 @@
 # ============================================================
+# envoy-gen — example configuration
+#
+# Copy this file to config.yaml and adapt it for the host:
+#     cp config.example.yaml config.yaml
+# config.yaml is listed in .gitignore, so a "git pull" never touches it.
+# ============================================================
+
+# ============================================================
 # Envoy Config Generator - Configuration File
 # ============================================================
 

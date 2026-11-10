@@ -27,6 +27,7 @@ import argparse
 import time
 
 from common import (
+    missing_config_hint,
     get_le_hosts,
     le_active,
     get_cert_paths as _get_cert_paths,
@@ -47,6 +48,7 @@ def load_config(path: str) -> dict:
     """Load and parse the YAML configuration file."""
     if not os.path.exists(path):
         print(f"[ERROR] Config file not found: {path}", file=sys.stderr)
+        print(f"[HINT] {missing_config_hint(path)}", file=sys.stderr)
         sys.exit(1)
     with open(path) as f:
         return yaml.safe_load(f)

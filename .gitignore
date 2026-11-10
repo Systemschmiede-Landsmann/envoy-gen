@@ -1,0 +1,6 @@
+# Host-specific configuration — create it from config.example.yaml
+config.yaml
+
+# Python
+__pycache__/
+*.pyc

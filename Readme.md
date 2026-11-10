@@ -10,7 +10,8 @@ Everything is driven by a single `config.yaml`. All scripts read from it, so the
 
 ```
 envoy-gen/
-├── config.yaml                      # Single source of truth for all scripts
+├── config.example.yaml              # Example configuration (copy to config.yaml)
+├── config.yaml                      # Your host-specific configuration (not in git)
 ├── generate.py                      # Generates envoy.yaml from templates
 ├── acme.py                          # Issues and renews Let's Encrypt certificates
 ├── common.py                        # Shared helpers (certificate selection, paths, checks)
@@ -53,6 +54,18 @@ pip3 install jinja2 pyyaml
 ```
 
 ## Quick Start
+
+### Create your configuration
+
+`config.yaml` is host-specific and therefore **not** part of the repository (it is listed in `.gitignore`). Create it from the example and adapt it:
+
+```bash
+cp config.example.yaml config.yaml
+nano config.yaml
+```
+
+Because the file is untracked, `git pull` never overwrites or conflicts with it.
+
 
 ### First deployment (no certificates yet)
 
@@ -305,6 +318,21 @@ Before writing a full `envoy.yaml`, `generate.py` checks every certificate/key p
 | Every host domain is covered by the certificate SANs (wildcards supported) | warning |
 
 An error aborts the run and `envoy.yaml` is **not** written, so a broken certificate never reaches a running Envoy. `--skip-cert-check` overrides this, for example to generate the file before the certificates have been copied. `preflight.py` runs the same checks.
+
+## Updating an installation
+
+```bash
+cd /opt/envoy-gen
+git pull
+sudo python3 acme.py --install-hook   # rewrites the renewal hooks (Let's Encrypt only)
+sudo python3 generate.py --reload     # regenerate envoy.yaml and restart Envoy
+```
+
+New options are documented in `config.example.yaml`. Compare it with your `config.yaml` after an update:
+
+```bash
+diff config.example.yaml config.yaml
+```
 
 ## Adding a new domain
 

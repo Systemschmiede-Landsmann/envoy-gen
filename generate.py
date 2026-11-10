@@ -23,6 +23,7 @@ import sys
 from jinja2 import Environment, FileSystemLoader
 
 from common import (
+    missing_config_hint,
     get_active_hosts,
     get_le_hosts,
     get_provided_hosts,
@@ -43,6 +44,7 @@ def load_config(path: str) -> dict:
     """Load and parse the YAML configuration file."""
     if not os.path.exists(path):
         print(f"[ERROR] Config file not found: {path}", file=sys.stderr)
+        print(f"[HINT] {missing_config_hint(path)}", file=sys.stderr)
         sys.exit(1)
     with open(path) as f:
         return yaml.safe_load(f)
